@@ -1,34 +1,83 @@
 version: "3.9"
 
 services:
-  fastapi_app:
-    build:
-      context: .
-    container_name: fastapi_app
-    ports:
-      - "8000:8000"
-    depends_on:
-      - postgres_db
-    environment:
-      DATABASE_URL: postgresql://postgres:postgres@postgres_db:5432/mydatabase
-    volumes:
-      - .:/app  # optional if you want live code reloading
-
   postgres_db:
     image: postgres:15
     container_name: postgres_db
-    ports:
-      - "5432:5432"
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "${POSTGRES_PORT}:5432"
     volumes:
+      - postgres_data:/var/lib/postgresql/data
       - ./postgres-init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
   trino:
     image: trinodb/trino:latest
     container_name: trino
     ports:
-      - "8080:8080"
+      - "${TRINO_PORT}:8080"
     volumes:
       - ./trino/catalog:/etc/trino/catalog
+    depends_on:
+      postgres_db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/v1/info || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  fastapi_app:
+    build: .
+    container_name: fastapi_app
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}
+      TRINO_HOST: ${TRINO_HOST}
+      TRINO_PORT: ${TRINO_PORT}
+      TRINO_USER: ${TRINO_USER}
+      TRINO_CATALOG: ${TRINO_CATALOG}
+      TRINO_SCHEMA: ${TRINO_SCHEMA}
+    ports:
+      - "${APP_PORT}:8000"
+    depends_on:
+      postgres_db:
+        condition: service_healthy
+      trino:
+        condition: service_healthy
+    volumes:
+      - .:/app
+
+  hive-metastore:
+    image: starburstdata/hive:latest
+    container_name: hive-metastore
+    environment:
+      - HIVE_METASTORE_URI=thrift://hive-metastore:9083
+    ports:
+      - "9083:9083"
+    depends_on:
+      - minio
+
+  minio:
+    image: minio/minio
+    container_name: minio
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+
+
+volumes:
+  postgres_data:
+
+
